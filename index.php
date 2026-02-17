@@ -9,6 +9,13 @@ use Monolog\Logger;
 use Monolog\Handler\RotatingFileHandler;
 use DI\Container;
 use Slim\Routing\RouteContext;
+use JimTools\JwtAuth\Secret;
+use JimTools\JwtAuth\Decoder\FirebaseDecoder;
+use JimTools\JwtAuth\Options;
+use JimTools\JwtAuth\Rules\RequestPathRule;
+use JimTools\JwtAuth\Middleware\JwtAuthentication;
+use JimTools\JwtAuth\Exceptions\AuthorizationException;
+
 error_reporting(E_ALL);
 ini_set('display_errors', 'On');
 ini_set("memory_limit", "-1");
@@ -64,7 +71,8 @@ $db = new \Envms\FluentPDO\Query($pdo);
 $container = new outer();
 $container->set('handler', function () use ($db, $pdo) {
 	require_once 'handle.php';
-	return new handler($db, $pdo); });
+	return new handler($db, $pdo);
+});
 
 AppFactory::setContainer($container);
 $app = AppFactory::create();
@@ -79,19 +87,29 @@ if (JWT_LOG == 'on') {
 	$logger->pushHandler($rotating);
 }
 $app->addRoutingMiddleware();
-$app->add(new Tuupola\Middleware\JwtAuthentication([
-	"secret" => JWT_SECRET,   
-	"logger" => $logger,
-	"secure" => false,
-	'ignore' => ['/genie-api/token', '/genie-api/cron/*'],
-	"error" => function ($response, $arguments) {
+$app->add(function (Request $request, RequestHandler $handler) {
+	try {
+		$secret = new Secret(JWT_SECRET, 'HS256');
+		$decoder = new FirebaseDecoder($secret);
+		$options = new Options(
+			isSecure: false,
+			attribute: 'token'
+		);
+		$rule = new RequestPathRule(
+			ignore: ['/genie-api/token', '/genie-api/cron/*']
+		);
+
+		$auth = new JwtAuthentication($options, $decoder, [$rule]);
+		return $auth->process($request, $handler);
+	} catch (AuthorizationException $e) {
 		$data["status"] = false;
-		$data["message"] = $arguments["message"];
-		return $response
-			->withHeader("Content-Type", "application/json")
-			->getBody()->write(json_encode($data, JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT));
+		$data["message"] = $e->getMessage();
+
+		$response = new Response();
+		$response->getBody()->write(json_encode($data, JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT));
+		return $response->withHeader("Content-Type", "application/json")->withStatus(401);
 	}
-]));
+});
 
 /**
 * Add Error Handling Middleware

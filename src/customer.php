@@ -17,34 +17,6 @@ class customer extends model
      * Extract value from JSON using dot notation path
      * Example: extractJsonValue($json, "addresses.0.city")
      */
-    protected function extractJsonValue(array $json, string $path): mixed
-    {
-        if (empty($path)) {
-            return null;
-        }
-
-        $parts = explode('.', $path);
-        $current = $json;
-
-        foreach ($parts as $part) {
-            if (is_numeric($part)) {
-                // Array index
-                if (!is_array($current) || !isset($current[(int) $part])) {
-                    return null;
-                }
-                $current = $current[(int) $part];
-            } else {
-                // Object key
-                if (!is_array($current) || !isset($current[$part])) {
-                    return null;
-                }
-                $current = $current[$part];
-            }
-        }
-
-        return $current;
-    }
-
     /**
      * Explore all keys in a JSON object recursively
      * Returns flattened list with dot notation for nested structures
@@ -57,14 +29,12 @@ class customer extends model
             $fullKey = $prefix ? "$prefix.$key" : $key;
             $keys[] = $fullKey;
 
-            if (is_array($value)) {
-                if (isset($value[0]) && is_numeric(array_keys($value)[0])) {
-                    // Numeric array - show indices
-                    foreach ($value as $idx => $item) {
-                        $keys[] = "$fullKey.$idx";
-                        if (is_array($item)) {
-                            $keys = array_merge($keys, $this->exploreJsonKeys($item, "$fullKey.$idx"));
-                        }
+            if (is_array($value) && !empty($value)) {
+                if (array_keys($value) === range(0, count($value) - 1)) {
+                    // Sequential array - omit indices for cleaner paths
+                    $item = $value[0];
+                    if (is_array($item)) {
+                        $keys = array_merge($keys, $this->exploreJsonKeys($item, $fullKey));
                     }
                 } else {
                     // Associative array
@@ -384,6 +354,106 @@ class customer extends model
         }
     }
 
+    /**
+     * Update platform response from API and synchronize
+     * POST /customer/update_platform_response
+     */
+    public function update_platform_response($args)
+    {
+        try {
+            $displayId = $this->req['display_id'] ?? ($args['display_id'] ?? null);
+            $platformId = $this->req['platform_id'] ?? ($args['platform_id'] ?? null);
+
+            if (!$displayId || !$platformId) {
+                return $this->out([
+                    'status' => false,
+                    'message' => 'display_id and platform_id are required'
+                ], 422);
+            }
+
+            // 1. Fetch display row
+            $displayRow = $this->from('customer_display_fields')
+                ->where('id', $displayId)
+                ->fetch();
+
+            if (!$displayRow) {
+                return $this->out(['status' => false, 'message' => 'Display record not found'], 404);
+            }
+
+            // 2. Extract external ID for this platform
+            $sources = explode(',', (string) $displayRow['sources']);
+            $externalIds = explode(',', (string) $displayRow['source_external_ids']);
+            $sourceIndex = array_search((string) $platformId, $sources);
+
+            if ($sourceIndex === false || !isset($externalIds[$sourceIndex])) {
+                return $this->out(['status' => false, 'message' => 'External ID not found for this platform in display record'], 404);
+            }
+
+            $externalId = $externalIds[$sourceIndex];
+
+            // 3. Get platform config
+            $platform = $this->from('platforms')->where('id', $platformId)->fetch();
+            if (!$platform) {
+                return $this->out(['status' => false, 'message' => 'Platform not found'], 404);
+            }
+
+            // 4. Fetch latest data from API
+            $rawResponseData = null;
+            if ($platform['code'] === 'shopify') {
+                $api = new shopify($this->pdo);
+                $rawResponseData = $api->get_customer($externalId);
+            } else if ($platform['code'] === 'apparelmagic') {
+                $api = new am($this->pdo);
+                $rawResponseData = $api->get_customers($externalId);
+            }
+
+            if (!$rawResponseData) {
+                return $this->out(['status' => false, 'message' => 'Failed to fetch data from platform API'], 502);
+            }
+
+            // 5. Update or insert platform response
+            $existingResponse = $this->from('customer_platform_responses')
+                ->where('platform_id', $platformId)
+                ->where('external_id', $externalId)
+                ->fetch();
+
+            $updateData = [
+                'raw_response' => json_encode($rawResponseData),
+                'synced_at' => date('Y-m-d H:i:s')
+            ];
+
+            if ($existingResponse) {
+                $this->update('customer_platform_responses')
+                    ->set($updateData)
+                    ->where('id', $existingResponse['id'])
+                    ->execute();
+            } else {
+                $updateData['platform_id'] = $platformId;
+                $updateData['external_id'] = $externalId;
+                $updateData['mapping_key_value'] = $displayRow['unique_mapping_key'];
+                $updateData['created_at'] = date('Y-m-d H:i:s');
+                $this->insertInto('customer_platform_responses')
+                    ->values($updateData)
+                    ->execute();
+            }
+
+            // 6. Synchronize display fields
+            $this->syncCustomerByDisplayId($displayId);
+
+            return $this->out([
+                'status' => true,
+                'message' => 'Platform response fetched and synced successfully',
+                'external_id' => $externalId
+            ], 200);
+
+        } catch (\Throwable $e) {
+            return $this->out([
+                'status' => false,
+                'message' => $e->getMessage()
+            ], 500);
+        }
+    }
+
 
 
     /**
@@ -568,6 +638,81 @@ class customer extends model
             $this->update('customer_display_fields')
                 ->set($updateData)
                 ->where('unique_mapping_key', $mappingValue)
+                ->execute();
+        }
+    }
+
+    protected function syncCustomerByDisplayId(int $displayId): void
+    {
+
+        $fields = $this->getActiveFields();
+        if (empty($fields)) {
+            return;
+        }
+
+        // Get the specific display row
+        $displayRow = $this->from('customer_display_fields')
+            ->where('id', $displayId)
+            ->fetch();
+
+        if (!$displayRow) {
+            return;
+        }
+
+        $mappingValue = $displayRow['unique_mapping_key'];
+        if (!$mappingValue) {
+            return;
+        }
+
+        // 1. Get customer record (if it exists)
+        $customerKey = $this->validateCustomerKey();
+        $customer = $this->from('customers')->where($customerKey, $mappingValue)->fetch();
+        $customerId = $customer ? (int) $customer['id'] : null;
+
+        // Track sources and their external IDs
+        $sourceMap = [];
+        if ($customer) {
+            $sourceMap['portal'] = (string) $customer['id'];
+        }
+
+        // 2. Fetch platform responses
+        $platformResponses = [];
+        $responses = $this->from('customer_platform_responses cpr')
+            ->leftJoin('platforms p ON p.id = cpr.platform_id')
+            ->select('cpr.raw_response, p.code as platform_code, cpr.platform_id, cpr.external_id')
+            ->where('cpr.mapping_key_value', $mappingValue)
+            ->fetchAll();
+
+        foreach ($responses as $resp) {
+            if ($resp['platform_code']) {
+                $platformResponses[$resp['platform_code']] = json_decode($resp['raw_response'], true);
+                $sourceMap[$resp['platform_id']] = $resp['external_id'];
+            }
+        }
+
+        // 3. Build update data
+        $updateData = [];
+        foreach ($fields as $field) {
+            $jsonPath = $field['json_path'];
+            $platformCode = $field['platform_code'];
+            $value = null;
+
+            if (!$platformCode || $platformCode === 'portal') {
+                $value = $customer ? ($customer[$jsonPath] ?? null) : null;
+            } else if (isset($platformResponses[$platformCode])) {
+                $value = $this->extractJsonValue($platformResponses[$platformCode], $jsonPath);
+            }
+
+            $updateData[$field['column_name']] = $this->castValue($value, $field['data_type']);
+        }
+
+        if (!empty($updateData)) {
+            $updateData['sources'] = implode(',', array_keys($sourceMap));
+            $updateData['source_external_ids'] = implode(',', array_values($sourceMap));
+            $updateData['customer_id'] = $customerId;
+            $this->update('customer_display_fields')
+                ->set($updateData)
+                ->where('id', $displayId)
                 ->execute();
         }
     }

@@ -270,6 +270,11 @@ class shopify extends model
 		}
 		return $this->paginate('get customers', $path);
 	}
+	public function get_customer($id)
+	{
+		$response = $this->get('get customer', "customers/{$id}.json");
+		return $response['customer'] ?? null;
+	}
 	public function get_products($params = [])
 	{
 		$path = 'products.json';

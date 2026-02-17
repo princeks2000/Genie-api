@@ -283,6 +283,7 @@ class settings extends model
 				'json_path' => $jsonPath,
 				'data_type' => $dataType,
 				'data_length' => $dataLength,
+				'category' => $it['category'] ?? null,
 				'is_active' => $it['is_active'] ?? 1,
 				'sort_order' => $it['sort_order'] ?? 0
 			];
@@ -423,9 +424,8 @@ class settings extends model
 					$paths[] = $newKey; // Add the container path
 					$item = $value[0];
 					if (is_array($item)) {
-						$paths = array_merge($paths, $this->flattenJson($item, $newKey . '.0'));
-					} else {
-						$paths[] = $newKey . '.0';
+						// Omit the index (.0) for cleaner paths
+						$paths = array_merge($paths, $this->flattenJson($item, $newKey));
 					}
 				} else {
 					$paths = array_merge($paths, $this->flattenJson($value, $newKey));
@@ -469,25 +469,6 @@ class settings extends model
 		}
 
 		return null;
-	}
-
-	protected function extractJsonValue(array $json, string $path): mixed
-	{
-		$keys = explode('.', $path);
-		$current = $json;
-		foreach ($keys as $key) {
-			if (!is_array($current)) {
-				return null;
-			}
-			if (isset($current[$key])) {
-				$current = $current[$key];
-			} elseif (is_numeric($key) && isset($current[(int) $key])) {
-				$current = $current[(int) $key];
-			} else {
-				return null;
-			}
-		}
-		return $current;
 	}
 
 	protected function sanitizeColumnName(string $name): string

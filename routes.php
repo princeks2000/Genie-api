@@ -50,6 +50,7 @@ $post[] = ['retrieve_display_field', 'settings/retrieve_display_fields'];
 
 // Customer sync endpoints
 $post[] = ['customer/save_platform_response', 'customer/save_platform_response'];
+$post[] = ['customer/update_platform_response', 'customer/update_platform_response'];
 
 
 // Customer CRUD endpoints

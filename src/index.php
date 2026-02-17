@@ -5,10 +5,6 @@ use PHPMailer\PHPMailer\Exception;
 class model extends \Envms\FluentPDO\Query
 {
   public $stripe_private_key;
-  private $host = DBHOST;
-  private $dbname = DBNAME;
-  private $user = DBUSER;
-  private $pass = DBPASS;
   protected $db;
   protected $pdo;
   protected $datetime;
@@ -17,7 +13,6 @@ class model extends \Envms\FluentPDO\Query
   protected $req;
   protected $statuscode;
   protected $data;
-  public $queuebookingid;
   function __construct($pdo)
   {
     $this->datetime = date('Y-m-d H:i:s');
@@ -452,5 +447,95 @@ class model extends \Envms\FluentPDO\Query
 
     $result = $query->fetch();
     return $result ?: null;
+  }
+
+  /**
+   * Extract value from JSON using dot notation.
+   * If a path segment points to an array, values are collected and concatenated.
+   */
+  protected function extractJsonValue(array $json, string $path): mixed
+  {
+    if (empty($path)) {
+      return null;
+    }
+
+    $parts = explode('.', $path);
+    $current = [$json]; // Start as an array of items to process
+
+    foreach ($parts as $part) {
+      $next = [];
+
+      foreach ($current as $item) {
+        if (!is_array($item)) {
+          continue;
+        }
+
+        if (is_numeric($part)) {
+          // Explicit array index
+          $index = (int) $part;
+          if (isset($item[$index])) {
+            $next[] = $item[$index];
+          }
+        } else {
+          // Object key or search in array of objects
+          if (isset($item[$part])) {
+            $next[] = $item[$part];
+          } elseif ($this->isSequentialArray($item)) {
+            // If the current item is an array, try to find the key in each element
+            foreach ($item as $element) {
+              if (is_array($element) && isset($element[$part])) {
+                $next[] = $element[$part];
+              }
+            }
+          }
+        }
+      }
+
+      if (empty($next)) {
+        return null;
+      }
+
+      $current = $next;
+    }
+
+    // Determine return value
+    $results = [];
+    foreach ($current as $val) {
+      if (is_array($val) && $this->isSequentialArray($val)) {
+        // If it's a list, flatten it into our result set
+        foreach ($val as $v) {
+          $results[] = $v;
+        }
+      } else {
+        $results[] = $val;
+      }
+    }
+
+    if (count($results) === 1) {
+      $final = $results[0];
+      return is_array($final) ? json_encode($final) : $final;
+    } else if (count($results) > 1) {
+      $values = [];
+      foreach ($results as $val) {
+        if (is_scalar($val)) {
+          $values[] = $val;
+        } else {
+          $values[] = is_array($val) ? json_encode($val) : (string) $val;
+        }
+      }
+      return implode(', ', array_unique($values));
+    }
+
+    return null;
+  }
+
+  /**
+   * Check if an array is sequential (list) vs associative (map)
+   */
+  protected function isSequentialArray(array $arr): bool
+  {
+    if ([] === $arr)
+      return true;
+    return array_keys($arr) === range(0, count($arr) - 1);
   }
 }

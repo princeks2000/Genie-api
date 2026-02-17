@@ -25,9 +25,8 @@ class product extends model
                 if (array_keys($value) === range(0, count($value) - 1)) {
                     $item = $value[0];
                     if (is_array($item)) {
-                        $keys = array_merge($keys, $this->exploreJsonKeys($item, $fullKey . '.0'));
-                    } else {
-                        $keys[] = $fullKey . '.0';
+                        // Omit the index (.0) for cleaner paths
+                        $keys = array_merge($keys, $this->exploreJsonKeys($item, $fullKey));
                     }
                 } else {
                     $keys = array_merge($keys, $this->exploreJsonKeys($value, $fullKey));
@@ -35,19 +34,6 @@ class product extends model
             }
         }
         return array_unique($keys);
-    }
-
-    protected function extractJsonValue(array $json, string $path): mixed
-    {
-        $keys = explode('.', $path);
-        $current = $json;
-        foreach ($keys as $key) {
-            if (!is_array($current) || !isset($current[$key])) {
-                return null;
-            }
-            $current = $current[$key];
-        }
-        return $current;
     }
 
     protected function extractSyncKeyValue(array $json, string $path): mixed

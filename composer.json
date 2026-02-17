@@ -2,7 +2,7 @@
     "require": {
         "slim/slim": "4.*",
         "slim/psr7": "dev-main",
-        "tuupola/slim-jwt-auth": "^3.4",
+        "jimtools/jwt-auth": "^3.0",
         "tuupola/base62": "^2.1",
         "monolog/monolog": "^2.1",
         "php-di/php-di": "^6.2",

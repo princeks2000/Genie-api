@@ -14,27 +14,6 @@ class product extends model
        UTILITIES
     ========================================== */
 
-    protected function exploreJsonKeys(array $array, string $prefix = ''): array
-    {
-        $keys = [];
-        foreach ($array as $key => $value) {
-            $fullKey = $prefix === '' ? $key : "{$prefix}.{$key}";
-            $keys[] = $fullKey;
-            if (is_array($value) && !empty($value)) {
-                // If it's a Sequential array, explore ONLY the first element
-                if (array_keys($value) === range(0, count($value) - 1)) {
-                    $item = $value[0];
-                    if (is_array($item)) {
-                        // Omit the index (.0) for cleaner paths
-                        $keys = array_merge($keys, $this->exploreJsonKeys($item, $fullKey));
-                    }
-                } else {
-                    $keys = array_merge($keys, $this->exploreJsonKeys($value, $fullKey));
-                }
-            }
-        }
-        return array_unique($keys);
-    }
 
     protected function extractSyncKeyValue(array $json, string $path): mixed
     {
@@ -238,30 +217,6 @@ class product extends model
         }
     }
 
-    protected function castValue(mixed $value, string $dataType): mixed
-    {
-        if ($value === null) {
-            return null;
-        }
-
-        switch ($dataType) {
-            case 'int':
-                return (int) $value;
-            case 'bool':
-                return $value ? 1 : 0;
-            case 'float':
-                return (float) $value;
-            case 'date':
-                if (is_string($value)) {
-                    $timestamp = strtotime($value);
-                    return $timestamp ? date('Y-m-d', $timestamp) : null;
-                }
-                return null;
-            case 'string':
-            default:
-                return (string) $value;
-        }
-    }
 
     /* ==========================================
        COLUMN MANAGEMENT
@@ -583,4 +538,5 @@ class product extends model
 
         return $this->out(['status' => true, 'message' => 'Product deleted'], 200);
     }
+
 }

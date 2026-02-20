@@ -38,6 +38,12 @@ $post[] = ['settings_retrieve', 'settings/settings_retrieve'];
 $post[] = ['settings_save', 'settings/settings_save'];
 $post[] = ['settings_delete', 'settings/settings_delete'];
 
+// Configurations (JSON value store)
+$post[] = ['configurations/setup', 'settings/configurations_setup'];
+$post[] = ['configurations/retrieve', 'settings/configurations_retrieve'];
+$post[] = ['configurations/save', 'settings/configurations_save'];
+$post[] = ['configurations/delete', 'settings/configurations_delete'];
+
 $get[] = ['logo_types/list', 'settings/logo_types_list'];
 $post[] = ['logo_types/toggle', 'settings/logo_types_toggle'];
 
@@ -134,3 +140,9 @@ $post[] = ['product/save', 'product/product_save'];
 $post[] = ['product/retrieve', 'product/product_retrieve'];
 $post[] = ['product/list', 'product/product_list'];
 $post[] = ['product/delete', 'product/product_delete'];
+
+// General CRUD endpoints
+$post[] = ['general/feature_request/save', 'general/feature_request_save'];
+$get[] = ['general/feature_request/list', 'general/feature_request_list'];
+$post[] = ['general/feature_request/retrieve', 'general/feature_request_retrieve'];
+$post[] = ['general/feature_request/delete', 'general/feature_request_delete'];

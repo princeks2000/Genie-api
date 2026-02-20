@@ -404,7 +404,7 @@ class settings extends model
 			return $this->out(['status' => false, 'message' => 'No sample data found from API'], 404);
 		}
 
-		$paths = $this->flattenJson($sampleData);
+		$paths = $this->exploreJsonKeys($sampleData);
 
 		return $this->out([
 			'status' => true,
@@ -413,29 +413,6 @@ class settings extends model
 		], 200);
 	}
 
-	protected function flattenJson($data, $prefix = ''): array
-	{
-		$paths = [];
-		foreach ($data as $key => $value) {
-			$newKey = $prefix === '' ? $key : $prefix . '.' . $key;
-			if (is_array($value) && !empty($value)) {
-				// If it's a Sequential array, explore ONLY the first element
-				if (array_keys($value) === range(0, count($value) - 1)) {
-					$paths[] = $newKey; // Add the container path
-					$item = $value[0];
-					if (is_array($item)) {
-						// Omit the index (.0) for cleaner paths
-						$paths = array_merge($paths, $this->flattenJson($item, $newKey));
-					}
-				} else {
-					$paths = array_merge($paths, $this->flattenJson($value, $newKey));
-				}
-			} else {
-				$paths[] = $newKey;
-			}
-		}
-		return array_unique($paths);
-	}
 
 	protected function getSampleData($platformId, $tableType)
 	{
@@ -975,6 +952,164 @@ class settings extends model
 			$this->deleteFrom('dict_placement')->where('id', $id)->execute();
 
 			return $this->out(['status' => true, 'message' => 'Placement deleted successfully'], 200);
+		} catch (\Throwable $e) {
+			return $this->out(['status' => false, 'message' => $e->getMessage()], 500);
+		}
+	}
+
+	// ==================== CONFIGURATIONS (JSON) ====================
+
+	/**
+	 * Setup configurations table (creates it if not exists)
+	 * POST /configurations/setup
+	 */
+	public function configurations_setup($args)
+	{
+		try {
+			$sql = "CREATE TABLE IF NOT EXISTS `configurations` (
+				`_key`        VARCHAR(255)  NOT NULL,
+				`_value`      LONGTEXT      NULL,
+				`description` TEXT          NULL,
+				PRIMARY KEY (`_key`)
+			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
+			$this->pdo->exec($sql);
+			return $this->out(['status' => true, 'message' => 'configurations table ready'], 200);
+		} catch (\Throwable $e) {
+			return $this->out(['status' => false, 'message' => $e->getMessage()], 500);
+		}
+	}
+
+	/**
+	 * Retrieve configurations (all or by keys)
+	 * POST /configurations/retrieve
+	 */
+	public function configurations_retrieve($args)
+	{
+		try {
+			$keys = $this->req['keys'] ?? null;
+			$data = $this->from('configurations')->select(null)->select('_key,_value,description');
+			if ($keys) {
+				$data = $data->where('_key', $keys);
+			}
+			$data = $data->fetchAll();
+
+			// Decode _value from JSON for each item
+			foreach ($data as &$item) {
+				if ($item['_value'] !== null) {
+					$decoded = json_decode($item['_value'], true);
+					if (json_last_error() === JSON_ERROR_NONE) {
+						$item['_value'] = $decoded;
+					}
+				}
+			}
+			unset($item);
+
+			return $this->out(['status' => true, 'keys' => $keys, 'items' => $data], 200);
+		} catch (\Throwable $e) {
+			return $this->out(['status' => false, 'message' => $e->getMessage()], 500);
+		}
+	}
+
+	/**
+	 * Save configurations (insert or update by _key)
+	 * POST /configurations/save
+	 * Expects: { "items": [{ "_key": "...", "_value": {...}, "description": "..." }] }
+	 * NOTE: _value MUST be a JSON object (array or associative object). Primitives are rejected.
+	 */
+	public function configurations_save($args)
+	{
+		$items = $this->req['items'] ?? null;
+		if (!is_array($items)) {
+			return $this->out(['status' => false, 'message' => 'items must be an array'], 422);
+		}
+		$this->pdo->beginTransaction();
+		try {
+			$count = 0;
+			$affectedKeys = [];
+			foreach ($items as $it) {
+				$key = $it['_key'] ?? null;
+				$val = $it['_value'] ?? null;
+				$desc = $it['description'] ?? null;
+
+				if ($key === null || $val === null) {
+					continue;
+				}
+
+				// If _value is already a PHP array/object, encode directly
+				if (is_array($val) || is_object($val)) {
+					$val = json_encode($val, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+				} elseif (is_string($val)) {
+					// Accept a JSON string, but validate it decodes to an object/array
+					$decoded = json_decode($val, true);
+					if (json_last_error() !== JSON_ERROR_NONE || !is_array($decoded)) {
+						$this->pdo->rollBack();
+						return $this->out([
+							'status' => false,
+							'message' => "_value for key '{$key}' must be a JSON object, got a plain string or invalid JSON",
+						], 422);
+					}
+					// Re-encode to normalise formatting
+					$val = json_encode($decoded, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+				} else {
+					// Primitives (int, float, bool) are not allowed
+					$this->pdo->rollBack();
+					return $this->out([
+						'status' => false,
+						'message' => "_value for key '{$key}' must be a JSON object, got a primitive value",
+					], 422);
+				}
+
+				$affectedKeys[$key] = true;
+				$sql = "INSERT INTO configurations (_key,_value,description) VALUES (?,?,?) ON DUPLICATE KEY UPDATE _value=VALUES(_value), description=VALUES(description)";
+				$stmt = $this->pdo->prepare($sql);
+				$stmt->execute([$key, $val, $desc]);
+				$count++;
+			}
+			$this->pdo->commit();
+
+			$keys = array_keys($affectedKeys);
+			if (empty($keys)) {
+				return $this->out(['status' => true, 'message' => 'Stored', 'count' => $count, 'items' => []], 200);
+			}
+
+			// Return stored items with _value decoded back to a JSON object
+			$data = $this->from('configurations')->select(null)->select('_key,_value,description')->where('_key', $keys)->fetchAll();
+			foreach ($data as &$item) {
+				if ($item['_value'] !== null) {
+					$decoded = json_decode($item['_value'], true);
+					if (json_last_error() === JSON_ERROR_NONE) {
+						$item['_value'] = $decoded;
+					}
+				}
+			}
+			unset($item);
+
+			return $this->out(['status' => true, 'message' => 'Stored', 'count' => $count, 'items' => $data], 200);
+		} catch (\Throwable $e) {
+			$this->pdo->rollBack();
+			return $this->out(['status' => false, 'message' => 'Failed to store', 'error' => $e->getMessage()], 500);
+		}
+	}
+
+	/**
+	 * Delete configurations by key or keys
+	 * POST /configurations/delete
+	 */
+	public function configurations_delete($args)
+	{
+		try {
+			$key = $this->req['key'] ?? ($args['key'] ?? null);
+			$keys = $this->req['keys'] ?? ($args['keys'] ?? null);
+
+			if ($keys && is_array($keys)) {
+				$this->deleteFrom('configurations')->where('_key', $keys)->execute();
+				return $this->out(['status' => true, 'message' => 'Deleted', 'keys' => $keys], 200);
+			}
+			if ($key) {
+				$this->deleteFrom('configurations')->where('_key', $key)->execute();
+				return $this->out(['status' => true, 'message' => 'Deleted', 'key' => $key], 200);
+			}
+			return $this->out(['status' => false, 'message' => 'key or keys is required'], 422);
 		} catch (\Throwable $e) {
 			return $this->out(['status' => false, 'message' => $e->getMessage()], 500);
 		}

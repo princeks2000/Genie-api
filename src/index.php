@@ -530,6 +530,63 @@ class model extends \Envms\FluentPDO\Query
   }
 
   /**
+   * Cast value to specified data type
+   */
+  protected function castValue(mixed $value, string $dataType): mixed
+  {
+    if ($value === null) {
+      return null;
+    }
+
+    switch ($dataType) {
+      case 'int':
+        return (int) $value;
+      case 'bool':
+        return $value ? 1 : 0;
+      case 'float':
+        return (float) $value;
+      case 'date':
+        if (is_string($value)) {
+          $timestamp = strtotime($value);
+          return $timestamp ? date('Y-m-d', $timestamp) : null;
+        }
+        return null;
+      case 'string':
+      default:
+        return (string) $value;
+    }
+  }
+
+  /**
+   * Explore all keys in a JSON object recursively
+   * Returns flattened list with dot notation for nested structures, omitting array indices.
+   */
+  protected function exploreJsonKeys(array $json, string $prefix = ''): array
+  {
+    $keys = [];
+
+    foreach ($json as $key => $value) {
+      $fullKey = $prefix ? "$prefix.$key" : $key;
+      $keys[] = $fullKey;
+
+      if (is_array($value) && !empty($value)) {
+        if ($this->isSequentialArray($value)) {
+          // Sequential array - omit indices for cleaner paths
+          $item = $value[0];
+          if (is_array($item)) {
+            $keys = array_merge($keys, $this->exploreJsonKeys($item, $fullKey));
+          }
+        } else {
+          // Associative array
+          $keys = array_merge($keys, $this->exploreJsonKeys($value, $fullKey));
+        }
+      }
+    }
+
+    return array_unique($keys);
+  }
+
+  /**
    * Check if an array is sequential (list) vs associative (map)
    */
   protected function isSequentialArray(array $arr): bool

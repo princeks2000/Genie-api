@@ -17,62 +17,7 @@ class customer extends model
      * Extract value from JSON using dot notation path
      * Example: extractJsonValue($json, "addresses.0.city")
      */
-    /**
-     * Explore all keys in a JSON object recursively
-     * Returns flattened list with dot notation for nested structures
-     */
-    protected function exploreJsonKeys(array $json, string $prefix = ''): array
-    {
-        $keys = [];
 
-        foreach ($json as $key => $value) {
-            $fullKey = $prefix ? "$prefix.$key" : $key;
-            $keys[] = $fullKey;
-
-            if (is_array($value) && !empty($value)) {
-                if (array_keys($value) === range(0, count($value) - 1)) {
-                    // Sequential array - omit indices for cleaner paths
-                    $item = $value[0];
-                    if (is_array($item)) {
-                        $keys = array_merge($keys, $this->exploreJsonKeys($item, $fullKey));
-                    }
-                } else {
-                    // Associative array
-                    $keys = array_merge($keys, $this->exploreJsonKeys($value, $fullKey));
-                }
-            }
-        }
-
-        return array_unique($keys);
-    }
-
-    /**
-     * Cast value to specified data type
-     */
-    protected function castValue(mixed $value, string $dataType): mixed
-    {
-        if ($value === null) {
-            return null;
-        }
-
-        switch ($dataType) {
-            case 'int':
-                return (int) $value;
-            case 'bool':
-                return $value ? 1 : 0;
-            case 'float':
-                return (float) $value;
-            case 'date':
-                if (is_string($value)) {
-                    $timestamp = strtotime($value);
-                    return $timestamp ? date('Y-m-d', $timestamp) : null;
-                }
-                return null;
-            case 'string':
-            default:
-                return (string) $value;
-        }
-    }
 
     /* ==========================================
        COLUMN MANAGEMENT
@@ -456,56 +401,6 @@ class customer extends model
 
 
 
-    /**
-     * Explore JSON keys
-     * POST /customer/explore_json_keys
-     */
-    public function explore_json_keys($args)
-    {
-        try {
-            $jsonObject = $this->req['json_object'] ?? ($args['json_object'] ?? null);
-
-            if (!$jsonObject) {
-                return $this->out([
-                    'status' => false,
-                    'message' => 'json_object is required'
-                ], 422);
-            }
-
-            // Parse JSON if string
-            if (is_string($jsonObject)) {
-                $jsonObject = json_decode($jsonObject, true);
-                if (json_last_error() !== JSON_ERROR_NONE) {
-                    return $this->out([
-                        'status' => false,
-                        'message' => 'Invalid JSON: ' . json_last_error_msg()
-                    ], 422);
-                }
-            }
-
-            if (!is_array($jsonObject)) {
-                return $this->out([
-                    'status' => false,
-                    'message' => 'json_object must be a JSON object'
-                ], 422);
-            }
-
-            $keys = $this->exploreJsonKeys($jsonObject);
-            sort($keys);
-
-            return $this->out([
-                'status' => true,
-                'keys' => $keys,
-                'count' => count($keys)
-            ], 200);
-
-        } catch (\Throwable $e) {
-            return $this->out([
-                'status' => false,
-                'message' => $e->getMessage()
-            ], 500);
-        }
-    }
 
     /* ==========================================
        DISPLAY FIELD DEFINITIONS

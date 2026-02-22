@@ -33,6 +33,7 @@ $post[] = ['admin_delete_user_level', 'admin/delete_user_level'];
 $post[] = ['credentials_retrieve', 'settings/credentials_retrieve'];
 $post[] = ['credentials_save', 'settings/credentials_save'];
 $post[] = ['credentials_delete', 'settings/credentials_delete'];
+$post[] = ['credentials_verify', 'settings/verify_platform_credentials'];
 
 $post[] = ['settings_retrieve', 'settings/settings_retrieve'];
 $post[] = ['settings_save', 'settings/settings_save'];

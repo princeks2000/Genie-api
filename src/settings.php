@@ -1114,5 +1114,103 @@ class settings extends model
 			return $this->out(['status' => false, 'message' => $e->getMessage()], 500);
 		}
 	}
+
+	public function verify_platform_credentials($args)
+	{
+		$platformId = $this->req['platform_id'] ?? null;
+		if (!$platformId) {
+			return $this->out(['status' => false, 'message' => 'platform_id is required'], 422);
+		}
+
+		$platform = $this->from('platforms')->where('id', $platformId)->fetch();
+		if (!$platform) {
+			return $this->out(['status' => false, 'message' => 'Platform not found'], 404);
+		}
+
+		$code = $platform['code'];
+		$isValid = false;
+		$message = '';
+
+		try {
+			if ($code == 'shopify') {
+				$token = $this->req['shopify_token'] ?? null;
+				$url = $this->req['shopify_url'] ?? null;
+				if (!$token || !$url) {
+					return $this->out(['status' => false, 'message' => 'shopify_token and shopify_url are required'], 422);
+				}
+
+				if (substr($url, -1) !== '/')
+					$url .= '/';
+
+				$curl = curl_init();
+				curl_setopt_array($curl, array(
+					CURLOPT_URL => $url . 'customers.json?limit=1',
+					CURLOPT_RETURNTRANSFER => true,
+					CURLOPT_TIMEOUT => 30,
+					CURLOPT_HTTPHEADER => array('X-Shopify-Access-Token:' . $token),
+				));
+				$response = curl_exec($curl);
+				$status_code = curl_getinfo($curl, CURLINFO_HTTP_CODE);
+				unset($curl);
+
+				if ($status_code == 200) {
+					$isValid = true;
+					$message = 'Connection successful';
+				} else {
+					$isValid = false;
+					$res = json_decode($response, true);
+					$message = $res['errors'] ?? 'Invalid credentials or URL';
+					if (is_array($message))
+						$message = json_encode($message);
+				}
+			} elseif ($code == 'apparelmagic') {
+				$token = $this->req['am_token'] ?? null;
+				$url = $this->req['am_url'] ?? null;
+				if (!$token || !$url) {
+					return $this->out(['status' => false, 'message' => 'am_token and am_url are required'], 422);
+				}
+
+				if (substr($url, -1) !== '/')
+					$url .= '/';
+
+				$am_url = $url . 'api/json/customers/?token=' . $token . '&time=' . time() . '&pagination[limit]=1';
+				$ch = curl_init();
+				curl_setopt_array($ch, array(
+					CURLOPT_URL => $am_url,
+					CURLOPT_RETURNTRANSFER => true,
+					CURLOPT_TIMEOUT => 30,
+					CURLOPT_HTTPHEADER => array("cache-control: no-cache"),
+				));
+				$result = curl_exec($ch);
+				$http_status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+				unset($ch);
+
+				if ($http_status == 200) {
+					$response = json_decode($result, true);
+					if (isset($response['response'])) {
+						$isValid = true;
+						$message = 'Connection successful';
+					} else {
+						$isValid = false;
+						$message = $response['meta']['errors'][0] ?? 'Invalid credentials';
+					}
+				} else {
+					$isValid = false;
+					$message = 'HTTP error: ' . $http_status;
+				}
+			} else {
+				return $this->out(['status' => false, 'message' => 'Verification not implemented for this platform'], 501);
+			}
+		} catch (\Throwable $e) {
+			return $this->out(['status' => false, 'message' => 'Internal error: ' . $e->getMessage()], 500);
+		}
+
+		return $this->out([
+			'status' => true,
+			'valid' => $isValid,
+			'platform' => $code,
+			'message' => $message
+		], 200);
+	}
 }
 

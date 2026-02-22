@@ -506,8 +506,16 @@ class customer extends model
         }
 
         // 3. Build update data
+        $reservedColumns = ['id', 'unique_mapping_key', 'sources', 'source_external_ids', 'customer_id', 'created_at', 'updated_at'];
         $updateData = [];
         foreach ($fields as $field) {
+            $columnName = $field['column_name'];
+
+            // Skip reserved/system columns to prevent integrity constraint violations
+            if (in_array($columnName, $reservedColumns)) {
+                continue;
+            }
+
             $jsonPath = $field['json_path'];
             $platformCode = $field['platform_code'];
             $value = null;
@@ -521,7 +529,7 @@ class customer extends model
             }
 
             $castValue = $this->castValue($value, $field['data_type']);
-            $updateData[$field['column_name']] = $castValue;
+            $updateData[$columnName] = $castValue;
 
         }
 
@@ -586,8 +594,16 @@ class customer extends model
         }
 
         // 3. Build update data
+        $reservedColumns = ['id', 'unique_mapping_key', 'sources', 'source_external_ids', 'customer_id', 'created_at', 'updated_at'];
         $updateData = [];
         foreach ($fields as $field) {
+            $columnName = $field['column_name'];
+
+            // Skip reserved/system columns to prevent integrity constraint violations
+            if (in_array($columnName, $reservedColumns)) {
+                continue;
+            }
+
             $jsonPath = $field['json_path'];
             $platformCode = $field['platform_code'];
             $value = null;
@@ -598,7 +614,7 @@ class customer extends model
                 $value = $this->extractJsonValue($platformResponses[$platformCode], $jsonPath);
             }
 
-            $updateData[$field['column_name']] = $this->castValue($value, $field['data_type']);
+            $updateData[$columnName] = $this->castValue($value, $field['data_type']);
         }
 
         if (!empty($updateData)) {
@@ -1071,16 +1087,14 @@ class customer extends model
                 return $this->out(['status' => false, 'message' => 'Valid id is required'], 422);
             }
 
-            $customer = $this->from('customer_display_fields')->where('id', $id)->fetch();
+            $customer = $this->from('customers')->where('id', $id)->fetch();
 
             if (!$customer) {
                 return $this->out(['status' => false, 'message' => 'Customer not found'], 404);
             }
 
             // Also fetch display fields if they exist
-            $displayFields = $this->from('customer_display_fields')->where('id', $id)->fetch();
-            $customer['display_fields'] = $displayFields ?: (object) [];
-
+            $displayFields = $this->from('customers')->where('id', $id)->fetch();
             return $this->out(['status' => true, 'item' => $customer], 200);
         } catch (\Throwable $e) {
             return $this->out(['status' => false, 'message' => $e->getMessage()], 500);
@@ -1151,26 +1165,17 @@ class customer extends model
                     $this->pdo->exec("UPDATE settings SET _value = " . ($values['customer_id'] + 1) . " WHERE _key = 'next_customer_id'");
                 }
 
-                // Use transaction to ensure atomicity
-                $this->pdo->beginTransaction();
-                try {
-                    $id = $this->insertInto('customers')->values($values)->execute();
-                    $message = 'Customer created';
+                $id = $this->insertInto('customers')->values($values)->execute();
+                $message = 'Customer created';
 
-                    // Initialize display fields row
-                    $customerKey = $this->validateCustomerKey();
-                    if (isset($values[$customerKey])) {
-                        $this->ensureCustomerRow($values[$customerKey], $id);
-                    }
-
-                    // Trigger sync (materialize display fields)
-                    $this->syncCustomer($id);
-
-                    $this->pdo->commit();
-                } catch (\Throwable $e) {
-                    $this->pdo->rollBack();
-                    throw $e;
+                // Initialize display fields row
+                $customerKey = $this->validateCustomerKey();
+                if (isset($values[$customerKey])) {
+                    $this->ensureCustomerRow($values[$customerKey], $id);
                 }
+
+                // Trigger sync (materialize display fields)
+                $this->syncCustomer($id);
             }
 
             $updated = $this->from('customers')->where('id', $id)->fetch();

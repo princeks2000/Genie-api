@@ -1157,7 +1157,7 @@ class logo extends model
             curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
             $infoResponse = curl_exec($ch);
             $infoHttpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            curl_close($ch);
+            unset($ch);
 
             if ($infoHttpCode === 200) {
                 $designInfo = json_decode($infoResponse, true);

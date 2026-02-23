@@ -306,26 +306,32 @@ class logo extends model
     protected function saveLogoThreadData_PulseID(string $logoid, array $designInfo): void
     {
         try {
+            // PulseID often wraps core design data inside an 'Info' key
+            $info = $designInfo['Info'] ?? $designInfo;
+
             $threadData = array(
                 'logo_id' => $logoid,
-                'density' => $designInfo['MasterDensity'] ?? null,
-                'designWidth' => $designInfo['Width'] ?? null,
-                'designHeight' => $designInfo['Height'] ?? null,
-                'machineFormat' => $designInfo['MachineFormat'] ?? null,
-                'stitches' => $designInfo['NumStitches'] ?? null,
-                'numTrims' => $designInfo['NumTrims'] ?? null,
-                'colourChanges' => isset($designInfo['Stops']) ? (count($designInfo['Stops']) - 1) : 0
+                'density' => $info['MasterDensity'] ?? null,
+                'designWidth' => $info['Width'] ?? null,
+                'designHeight' => $info['Height'] ?? null,
+                'machineFormat' => $info['MachineFormat'] ?? null,
+                'stitches' => $info['NumStitches'] ?? null,
+                'numTrims' => $info['NumTrims'] ?? null,
+                'colourChanges' => isset($designInfo['Stops']) ? (count($designInfo['Stops']) - 1) : (isset($info['Stops']) ? (count($info['Stops']) - 1) : 0)
             );
 
             // Extract thread information
-            if (isset($designInfo['Palette']) && isset($designInfo['Stops'])) {
+            $palette = $designInfo['Palette'] ?? ($info['Palette'] ?? null);
+            $stops = $designInfo['Stops'] ?? ($info['Stops'] ?? null);
+
+            if ($palette && $stops) {
                 // Calculate max thread count based on API response (colour changes from Stops)
-                $colourChanges = count($designInfo['Stops']) - 1;
+                $colourChanges = count($stops) - 1;
                 $maxThreadCount = $colourChanges + 1;
 
-                $codelist = array_column($designInfo['Palette'], 'Code', 'Name');
+                $codelist = array_column($palette, 'Code', 'Name');
                 $threadCount = 1;
-                foreach ($designInfo['Stops'] as $color) {
+                foreach ($stops as $color) {
                     if ($threadCount <= $maxThreadCount) {
                         $colorCode = $codelist[$color['ThreadName']] ?? '';
                         if ($colorCode) {
@@ -1104,9 +1110,9 @@ class logo extends model
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         $uploadResponse = curl_exec($ch);
         $uploadHttpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
+        unset($ch);
 
-        $this->logServiceCall('api_logs_pulseid', $logoid, $uploadUrl, 'POST', '[FILE DATA]', $uploadResponse, $uploadHttpCode);
+        $this->logServiceCall('logs_pulseid', $logoid, $uploadUrl, 'POST', '[FILE DATA]', $uploadResponse, $uploadHttpCode);
 
         if ($uploadHttpCode !== 200) {
             throw new \Exception("PulseID upload failed with code $uploadHttpCode: $uploadResponse");
@@ -1137,9 +1143,9 @@ class logo extends model
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         $pngData = curl_exec($ch);
         $renderHttpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
+        unset($ch);
 
-        $this->logServiceCall('api_logs_pulseid', $logoid, $renderUrl, 'GET', '', '[BINARY DATA]', $renderHttpCode);
+        $this->logServiceCall('logs_pulseid', $logoid, $renderUrl, 'GET', '', '[BINARY DATA]', $renderHttpCode);
 
         if ($renderHttpCode !== 200 || !$pngData) {
             throw new \Exception("PulseID render failed with code $renderHttpCode");
@@ -1162,8 +1168,7 @@ class logo extends model
             if ($infoHttpCode === 200) {
                 $designInfo = json_decode($infoResponse, true);
                 if (isset($designInfo['Info'])) {
-                    // Logic to save design info if table exists
-                    // $this->model->insertcustomeremblogos_pulseid($logoid, $designInfo['Info'], $logoid.".DST");
+                    $this->saveLogoThreadData_PulseID($logoid, $designInfo);
                 }
             }
         }
@@ -1212,9 +1217,9 @@ class logo extends model
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         $response = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
+        unset($ch);
 
-        $this->logServiceCall('api_logs_ambassador', $logoid, $url, 'POST', '[FILE DATA]', substr($response, 0, 1000) . '...', $httpCode);
+        $this->logServiceCall('logs_ambassador', $logoid, $url, 'POST', '[FILE DATA]', substr($response, 0, 1000) . '...', $httpCode);
 
         if ($httpCode !== 200) {
             throw new \Exception("Ambassador processed failed with code $httpCode");
@@ -1310,9 +1315,9 @@ class logo extends model
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         $response = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
+        unset($ch);
 
-        $this->logServiceCall('api_logs_wilcom', $logoid, $url, 'POST', substr(json_encode($postData), 0, 1000) . '...', substr($response, 0, 1000) . '...', $httpCode);
+        $this->logServiceCall('logs_wilcom', $logoid, $url, 'POST', substr(json_encode($postData), 0, 1000) . '...', substr($response, 0, 1000) . '...', $httpCode);
 
         if ($httpCode !== 200 || !$response) {
             throw new \Exception("Wilcom API failed with code $httpCode: " . substr($response, 0, 500));
@@ -1337,7 +1342,12 @@ class logo extends model
 
             // Optional: extract design_info if not skipping DB save
             if (!$skipDbSave && isset($xmldata->design_info)) {
-                // We could implement saveLogoThreadData_Wilcom here if needed
+                // Convert SimpleXMLElement to array and map @attributes to attributes for compatibility
+                $json = json_encode($xmldata);
+                $fullResponseArray = json_decode(str_replace('"@attributes":', '"attributes":', $json), true);
+                if (isset($fullResponseArray['design_info'])) {
+                    $this->saveLogoThreadData_Wilcom($logoid, $fullResponseArray['design_info'], $fullResponseArray);
+                }
             }
 
             return true;

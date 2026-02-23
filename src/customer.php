@@ -1045,7 +1045,7 @@ class customer extends model
     /**
      * List customers with pagination and search
      */
-    public function customer_list($args)//todo
+    public function customer_list($args)
     {
         try {
             $limit = intval($this->req['limit'] ?? 100);
@@ -1054,15 +1054,67 @@ class customer extends model
 
             $query = $this->from('customer_display_fields');
 
+            // 1. Dynamic search across all active fields
             if ($search) {
-                // Simple search by name, email or phone
-                $query->where('name', "%$search%")
-                    ->whereOr('email', "%$search%")
-                    ->whereOr('phone', "%$search%");
+                $searchCond = [];
+                $searchParams = [];
+
+                // Default base columns
+                $searchCols = [];
+
+                // Get dynamic columns from definitions
+                $fields = $this->getActiveFields();
+                foreach ($fields as $field) {
+                    $searchCols[] = $field['column_name'];
+                }
+
+                $searchCols = array_unique($searchCols);
+                foreach ($searchCols as $col) {
+                    $searchCond[] = "`$col` LIKE ?";
+                    $searchParams[] = "%$search%";
+                }
+                // var_dump($searchCond);
+                //var_dump($searchParams);
+                if (!empty($searchCond)) {
+                    $query->where('(' . implode(' OR ', $searchCond) . ')', $searchParams);
+                }
             }
 
+            // 2. Individual column filters
+            $reservedParams = ['limit', 'offset', 'search', 'sort_by', 'sort_order'];
+            foreach ($this->req as $key => $value) {
+                if (!in_array($key, $reservedParams) && !empty($value)) {
+                    // Simple hygiene: only allow filtering by keys that don't look like SQL commands
+                    // and are potentially valid columns (approximate check)
+                    if (preg_match('/^[a-zA-Z0-9_]+$/', $key)) {
+                        $query->where("`$key`", $value);
+                    }
+                }
+            }
+
+            // 3. Dynamic sorting
+            $sortBy = $this->req['sort_by'] ?? 'id';
+            $sortOrder = strtoupper($this->req['sort_order'] ?? 'DESC');
+            if (!in_array($sortOrder, ['ASC', 'DESC'])) {
+                $sortOrder = 'DESC';
+            }
+
+            // Validate sortBy against available columns to prevent SQL injection
+            $allowedSortCols = ['id', 'unique_mapping_key', 'created_at', 'updated_at', 'customer_id', 'sources', 'source_external_ids'];
+            $fields = $this->getActiveFields();
+            foreach ($fields as $field) {
+                $allowedSortCols[] = $field['column_name'];
+            }
+
+            if (!in_array($sortBy, $allowedSortCols)) {
+                $sortBy = 'id';
+            }
+
+            $query->orderBy("`$sortBy` $sortOrder");
+
             $total = $query->count();
-            $items = $query->limit($limit)->offset($offset)->orderBy('id DESC')->fetchAll();
+            $items = $query->limit($limit)->offset($offset)->fetchAll();
+            //echo $items = $query->limit($limit)->offset($offset);
 
             return $this->out([
                 'status' => true,

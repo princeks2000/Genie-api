@@ -10,6 +10,7 @@
         "phpmailer/phpmailer": "^6.1",
         "gargron/fileupload": "~1.4.0",
         "respect/validation": "^2.0",
-        "stripe/stripe-php": "^8.10"
+        "stripe/stripe-php": "^8.10",
+        "tecnickcom/tcpdf": "^6.4"
     }
 }

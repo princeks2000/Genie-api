@@ -449,6 +449,36 @@ class model extends \Envms\FluentPDO\Query
     return $result ?: null;
   }
 
+
+  /**
+   * Calculate dimensions for PDF/Images (Legacy Helper)
+   */
+  public function calculateDimensions($width, $height, $maxwidth, $maxheight): array
+  {
+    if ($width != $height) {
+      if ($width > $height) {
+        $t_width = $maxwidth;
+        $t_height = (($t_width * $height) / $width);
+        //fix height
+        if ($t_height > $maxheight) {
+          $t_height = $maxheight;
+          $t_width = (($width * $t_height) / $height);
+        }
+      } else {
+        $t_height = $maxheight;
+        $t_width = (($width * $t_height) / $height);
+        //fix width
+        if ($t_width > $maxwidth) {
+          $t_width = $maxwidth;
+          $t_height = (($t_width * $height) / $width);
+        }
+      }
+    } else {
+      $t_width = $t_height = min($maxheight, $maxwidth);
+    }
+    return array('height' => (int) $t_height, 'width' => (int) $t_width);
+  }
+
   /**
    * Extract value from JSON using dot notation.
    * If a path segment points to an array, values are collected and concatenated.

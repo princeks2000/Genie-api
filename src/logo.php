@@ -243,6 +243,26 @@ class logo extends model
     }
 
     /**
+     * Convert DST to PNG using Emboryx API
+     */
+    protected function convertDstToPng_Emboryx(string $logoid, string $uploadDir): bool
+    {
+        $dstFilePath = $uploadDir . '/' . $logoid . '.DST';
+        $pngFilePath = $uploadDir . '/' . $logoid . '_DST.PNG';
+
+        if (!file_exists($dstFilePath)) {
+            throw new \Exception("DST file not found: {$dstFilePath}");
+        }
+
+        try {
+            return (bool) $this->emboryxRecolor($logoid, $uploadDir, null);
+        } catch (\Throwable $e) {
+            error_log("Emboryx DST conversion failed for {$logoid}: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
      * Convert AI to PNG using Inkscape
      */
     protected function convertAiToPng_Inkscape(string $logoid, string $uploadDir): bool
@@ -491,6 +511,62 @@ class logo extends model
     }
 
     /**
+     * Save thread data from Emboryx API
+     */
+    protected function saveLogoThreadData_Emboryx(string $logoid, array $threadDetails): void
+    {
+        try {
+            $threadData = array(
+                'logo_id' => $logoid,
+                'designWidth' => isset($threadDetails['design_dimensions']['width']) ? ($threadDetails['design_dimensions']['width'] * 10) : null,
+                'designHeight' => isset($threadDetails['design_dimensions']['height']) ? ($threadDetails['design_dimensions']['height'] * 10) : null,
+                'stitches' => $threadDetails['total_stitch_count'] ?? null,
+                'numTrims' => $threadDetails['trim_count'] ?? null,
+                'colourChanges' => $threadDetails['color_change_count'] ?? 0
+            );
+
+            if (isset($threadDetails['threads']) && is_array($threadDetails['threads'])) {
+                $threadCount = 1;
+                foreach ($threadDetails['threads'] as $thread) {
+                    $hex = strtolower(trim($thread['color'] ?? ''));
+                    if ($hex) {
+                        $hexCode = ltrim($hex, '#');
+                        if (strlen($hexCode) == 6) {
+                            $r = hexdec(substr($hexCode, 0, 2));
+                            $g = hexdec(substr($hexCode, 2, 2));
+                            $b = hexdec(substr($hexCode, 4, 2));
+
+                            $colorRow = $this->from('color_list')
+                                ->where('red', $r)
+                                ->where('green', $g)
+                                ->where('blue', $b)
+                                ->fetch();
+
+                            if ($colorRow) {
+                                $manuCode = $this->from('color_manufacturer')->where('name', $colorRow['manufacturer'])->fetch('code');
+                                $threadData['thread_' . $threadCount] = ($manuCode ?? '') . '-' . $colorRow['code'];
+                                $threadData['thread_' . $threadCount . '_desc'] = $colorRow['name'];
+                            } else {
+                                $threadData['thread_' . $threadCount . '_desc'] = $hex;
+                            }
+                        }
+                    }
+                    $threadCount++;
+                }
+            }
+
+            $existing = $this->from('logos')->where('logo_id', $logoid)->fetch();
+            if ($existing) {
+                $this->update('logos')->set($threadData)->where('logo_id', $logoid)->execute();
+            } else {
+                error_log("No logo record found to save Emboryx thread data for {$logoid}");
+            }
+        } catch (\Throwable $e) {
+            error_log("Error saving Emboryx thread data for {$logoid}: " . $e->getMessage());
+        }
+    }
+
+    /**
      * Upload logo files for a customer
      * POST /customer/upload_logo
      * Accepts base64-encoded files: JPEG, PNG, PDF, DST, AI
@@ -674,6 +750,9 @@ class logo extends model
             }, $uploadedFiles));
             if ($dstUploaded) {
                 switch (strtolower($dstMethod)) {
+                    case 'emboryx':
+                        $success = $this->convertDstToPng_Emboryx($generatedLogoId, $uploadDir);
+                        break;
                     case 'wilcom':
                         $success = $this->convertDstToPng_Wilcom($generatedLogoId, $uploadDir);
                         break;
@@ -913,6 +992,9 @@ class logo extends model
             if (in_array('DST', $filesUpdated)) {
                 try {
                     switch (strtolower($dstMethod)) {
+                        case 'emboryx':
+                            $success = $this->convertDstToPng_Emboryx($logoId, $uploadDir);
+                            break;
                         case 'wilcom':
                             $success = $this->convertDstToPng_Wilcom($logoId, $uploadDir);
                             break;
@@ -1074,6 +1156,19 @@ class logo extends model
             return (bool) $this->wilcomRecolor($logoid, $uploadDir, $threads);
         } catch (\Throwable $e) {
             error_log("Wilcom PNG regeneration failed for $logoid: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Regenerate DST PNG with specific threads using Emboryx
+     */
+    protected function regenerateDstPngWithThreads_Emboryx(string $logoid, string $uploadDir, ?array $threads): bool
+    {
+        try {
+            return (bool) $this->emboryxRecolor($logoid, $uploadDir, $threads);
+        } catch (\Throwable $e) {
+            error_log("Emboryx PNG regeneration failed for $logoid: " . $e->getMessage());
             return false;
         }
     }
@@ -1358,6 +1453,107 @@ class logo extends model
 
 
     /**
+     * Emboryx Recolor Logic
+     */
+    protected function emboryxRecolor(string $logoid, string $uploadDir, ?array $providedThreads = null, ?string $outputFilePath = null, bool $skipDbSave = false): bool
+    {
+        $dstFilePath = $uploadDir . '/' . $logoid . '.DST';
+        if (!file_exists($dstFilePath)) {
+            throw new \Exception("DST file not found");
+        }
+
+        $defaultColors = [];
+        if ($providedThreads) {
+            foreach ($providedThreads as $threadCode) {
+                $parts = explode('-', $threadCode, 2);
+                $code = count($parts) > 1 ? $parts[1] : $threadCode;
+
+                $hex = '';
+                $colorRow = $this->from('color_list')->where('code', $code)->fetch();
+                if ($colorRow) {
+                    $r = str_pad(dechex((int) $colorRow['red']), 2, '0', STR_PAD_LEFT);
+                    $g = str_pad(dechex((int) $colorRow['green']), 2, '0', STR_PAD_LEFT);
+                    $b = str_pad(dechex((int) $colorRow['blue']), 2, '0', STR_PAD_LEFT);
+                    $hex = '#' . $r . $g . $b;
+                } else {
+                    $hex = '#000000';
+                }
+                $defaultColors[] = $hex;
+            }
+        } else {
+            $existing = $this->from('logos')->where('logo_id', $logoid)->fetch();
+            if ($existing && $existing['colourChanges'] > 0) {
+                for ($i = 1; $i <= $existing['colourChanges'] + 1; $i++) {
+                    $threadCode = $existing['thread_' . $i];
+                    if ($threadCode) {
+                        $parts = explode('-', $threadCode, 2);
+                        $code = count($parts) > 1 ? $parts[1] : $threadCode;
+                        $colorRow = $this->from('color_list')->where('code', $code)->fetch();
+                        if ($colorRow) {
+                            $r = str_pad(dechex((int) $colorRow['red']), 2, '0', STR_PAD_LEFT);
+                            $g = str_pad(dechex((int) $colorRow['green']), 2, '0', STR_PAD_LEFT);
+                            $b = str_pad(dechex((int) $colorRow['blue']), 2, '0', STR_PAD_LEFT);
+                            $defaultColors[] = '#' . $r . $g . $b;
+                        }
+                    }
+                }
+            }
+        }
+
+        $apiUrl = 'https://embroidery-thread-image-builder-kusqc.ondigitalocean.app/convert';
+
+        $postFields = [
+            'width' => $this->getSettingValue('logo_emboryx_width') ?? '400',
+            'file' => new \CURLFile($dstFilePath)
+        ];
+
+        if (!empty($defaultColors)) {
+            $postFields['default_colors'] = json_encode($defaultColors);
+        }
+
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $apiUrl);
+        curl_setopt($ch, CURLOPT_POST, 1);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $postFields);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $error = curl_error($ch);
+        unset($ch);
+
+        $logPostFields = $postFields;
+        if (isset($logPostFields['file'])) {
+            $logPostFields['file'] = '[File Object]';
+        }
+        $this->logServiceCall('logs_emboryx', $logoid, $apiUrl, 'POST', substr(json_encode($logPostFields), 0, 1000) . '...', substr((string) $response, 0, 1000) . '...', $httpCode);
+
+        if ($error) {
+            throw new \Exception("Emboryx curl error: " . $error);
+        }
+
+        if ($httpCode !== 200) {
+            throw new \Exception("Emboryx error HTTP $httpCode: $response");
+        }
+
+        $data = json_decode($response, true);
+        if (!$data || !isset($data['image'])) {
+            throw new \Exception("Invalid response from Emboryx API");
+        }
+
+        $pngData = base64_decode($data['image']);
+        $savePath = $outputFilePath ?? ($uploadDir . '/' . $logoid . '_DST.PNG');
+        file_put_contents($savePath, $pngData);
+
+        if (!$skipDbSave && isset($data['thread_details'])) {
+            $this->saveLogoThreadData_Emboryx($logoid, $data['thread_details']);
+        }
+
+        return true;
+    }
+
+
+    /**
      * Preview a logo recolor without saving changes
      * POST /customer/preview_recolor
      */
@@ -1399,6 +1595,9 @@ class logo extends model
             $success = false;
 
             switch (strtolower($dstMethod)) {
+                case 'emboryx':
+                    $success = $this->emboryxRecolor($logoId, $uploadDir, $threads, $tempPath, true);
+                    break;
                 case 'wilcom':
                     $success = $this->wilcomRecolor($logoId, $uploadDir, $threads, $tempPath, true);
                     break;
@@ -1489,6 +1688,9 @@ class logo extends model
                 // Only regenerate if DST exists
                 if (file_exists($uploadDir . '/' . $logoId . '.DST')) {
                     switch (strtolower($dstMethod)) {
+                        case 'emboryx':
+                            $this->regenerateDstPngWithThreads_Emboryx($logoId, $uploadDir, $threadsToRegenerate);
+                            break;
                         case 'wilcom':
                             $this->regenerateDstPngWithThreads_Wilcom($logoId, $uploadDir, $threadsToRegenerate);
                             break;
@@ -1644,6 +1846,9 @@ class logo extends model
 
                 if (file_exists($uploadDir . '/' . $targetLogoId . '.DST')) {
                     switch (strtolower($dstMethod)) {
+                        case 'emboryx':
+                            $this->regenerateDstPngWithThreads_Emboryx($targetLogoId, $uploadDir, $threadsToRegenerate);
+                            break;
                         case 'wilcom':
                             $this->regenerateDstPngWithThreads_Wilcom($targetLogoId, $uploadDir, $threadsToRegenerate);
                             break;
@@ -2007,4 +2212,326 @@ class logo extends model
     }
 
 
+    /**
+     * Download Color Card PDF
+     * GET /customer/logo/downloadcolorcard?logo_id=xxx
+     */
+    public function downloadcolorcard($args)
+    {
+        try {
+            $logoId = trim($_GET['logo_id'] ?? ($args['logo_id'] ?? ''));
+            if (empty($logoId)) {
+                return $this->out(['status' => false, 'message' => 'logo_id is required'], 422);
+            }
+
+            $pdfData = $this->generateColorCardPdfContent($logoId);
+
+            // Output
+            ob_clean();
+            header('Content-Type: application/pdf');
+            header('Content-Disposition: inline; filename="' . $logoId . '.pdf"');
+            echo $pdfData;
+            exit;
+
+        } catch (\Throwable $e) {
+            return $this->out(['status' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Helper to generate Color Card PDF content
+     * Returns raw PDF binary string
+     */
+    protected function generateColorCardPdfContent(string $logoId): string
+    {
+        // Get logo info
+        $logo = $this->from('logos')->where('logo_id', $logoId)->fetch();
+
+        if (!$logo) {
+            throw new \Exception('Logo not found');
+        }
+
+        $address1 = $this->getSettingValue('address1') ?? '';
+        $wide_logo = $this->getSettingValue('wide_logo') ?? '';
+
+        // Initialize TCPDF
+        $pdf = new \TCPDF('P', 'mm', 'A4', true, 'UTF-8', false);
+        $pdf->SetCreator('Genie API');
+        $pdf->SetAuthor($logoId);
+        $pdf->SetTitle($logoId . ' Color Card');
+        $pdf->SetSubject($logoId);
+        $pdf->setPrintHeader(false);
+        $pdf->setPrintFooter(false);
+
+        $bordercolor = [36, 137, 205];
+        $lineStyle = ['width' => 0.5, 'cap' => 'butt', 'join' => 'miter', 'dash' => 0, 'color' => $bordercolor];
+        $selectedfont = 'helvetica';
+
+        $pdf->AddPage();
+        $pdf->SetAutoPageBreak(TRUE, 0);
+        $pdf->SetFooterMargin(0);
+
+        // 1. Header - Wide Logo & Title
+        if ($wide_logo) {
+            $pdf->Image($wide_logo, 10, 12.5, 0, 12, '', '', 'C', true, 100, 'C', false, false, 0, false, false, false);
+        }
+        $pdf->SetFont($selectedfont, '', 18);
+        $pdf->SetXY(0, 30);
+        $pdf->Cell(210, 5, 'COLOR CARD', 0, 1, 'C', 0, '', 0);
+
+        $pdf->SetFont($selectedfont, '', 13);
+        $pdf->SetXY(0, 40);
+        $pdf->Cell(210, 5, $address1, 0, 1, 'C', 0, '', 0);
+
+        $pdf->SetXY(0, 47);
+        $pdf->Cell(210, 5, '(' . $logo['customerName'] . ')', 0, 1, 'C', 0, '', 0);
+
+        // Blue separator bar
+        $pdf->Rect(0, 55, 277, 5, 'DF', ['all' => $lineStyle], $bordercolor);
+
+        // 2. Thread Information Box
+        $one = 9;
+        $boxheight = (7 * ($logo['colourChanges'] ?? 0)) + (8 * $one) + 15;
+        $boxwidth = 100.3;
+        $pdf->SetFillColor(245, 245, 245);
+        $pdf->SetLineStyle($lineStyle);
+        $pdf->RoundedRect(10, 69, $boxwidth, $boxheight, 3.50, '1111', 'DF');
+
+        $pdf->SetFont($selectedfont, '', 9);
+        $hstart1 = 10.3;
+        $hstart2 = 50;
+        $hstart3 = 55;
+        $start = 75;
+
+        $rowsData = [
+            ['Primary Thread Card', $logo['machineFormat'] ?? ''],
+            ['Account No', $logo['account_number'] ?? ''],
+            ['Company', $logo['customerName'] ?? ''],
+            ['Design', $logoId . '.DST'],
+        ];
+
+        foreach ($rowsData as $index => $rowData) {
+            $bg = ($index % 2 == 0) ? [232, 232, 232] : [245, 245, 245];
+            $pdf->SetFillColor($bg[0], $bg[1], $bg[2]);
+            $rowY = $start + ($index * $one);
+
+            $pdf->SetXY($hstart1, $rowY);
+            $pdf->Cell(40, $one, $rowData[0], 0, 1, 'L', 1, '', 0);
+            $pdf->SetXY($hstart2, $rowY);
+            $pdf->Cell(5, $one, ':', 0, 1, 'C', 1, '', 0);
+            $pdf->SetXY($hstart3, $rowY);
+            $pdf->Cell(55, $one, $rowData[1], 0, 1, 'L', 1, '', 0);
+        }
+
+        // Stitches, Stops, Trims Row
+        $pdf->SetFillColor(232, 232, 232);
+        $rowY = $start + (4 * $one);
+        $pdf->SetXY($hstart1, $rowY);
+        $pdf->Cell(15, $one, 'Stitches', 0, 1, 'L', 1, '', 0);
+        $pdf->SetXY(25, $rowY);
+        $pdf->Cell(5, $one, ':', 0, 1, 'L', 1, '', 0);
+        $pdf->SetXY(30, $rowY);
+        $pdf->Cell(15, $one, $logo['stitches'] ?? '', 0, 1, 'L', 1, '', 0);
+
+        $pdf->SetXY(45, $rowY);
+        $pdf->Cell(15, $one, 'Stops', 0, 1, 'L', 1, '', 0);
+        $pdf->SetXY(60, $rowY);
+        $pdf->Cell(5, $one, ':', 0, 1, 'L', 1, '', 0);
+        $pdf->SetXY(65, $rowY);
+        $pdf->Cell(15, $one, $logo['colourChanges'] ?? '', 0, 1, 'L', 1, '', 0);
+
+        $pdf->SetXY(80, $rowY);
+        $pdf->Cell(13, $one, 'Trims', 0, 1, 'L', 1, '', 0);
+        $pdf->SetXY(93, $rowY);
+        $pdf->Cell(5, $one, ':', 0, 1, 'L', 1, '', 0);
+        $pdf->SetXY(98, $rowY);
+        $pdf->Cell(12, $one, $logo['numTrims'] ?? '', 0, 1, 'L', 1, '', 0);
+
+        // Height and Width
+        $designWidth = number_format(($logo['designWidth'] ?? 0) / 254, 2) . ' inches';
+        $designHeight = number_format(($logo['designHeight'] ?? 0) / 254, 2) . ' inches';
+
+        $pdf->SetFillColor(245, 245, 245);
+        $rowY = $start + (5 * $one);
+        $pdf->SetXY($hstart1, $rowY);
+        $pdf->Cell(15, $one, 'Height', 0, 1, 'L', 1, '', 0);
+        $pdf->SetXY(25, $rowY);
+        $pdf->Cell(5, $one, ':', 0, 1, 'L', 1, '', 0);
+        $pdf->SetXY(30, $rowY);
+        $pdf->Cell(15, $one, $designHeight, 0, 1, 'L', 1, '', 0);
+
+        $pdf->SetXY(45, $rowY);
+        $pdf->Cell(15, $one, 'Width', 0, 1, 'L', 1, '', 0);
+        $pdf->SetXY(60, $rowY);
+        $pdf->Cell(5, $one, ':', 0, 1, 'L', 1, '', 0);
+        $pdf->SetXY(65, $rowY);
+        $pdf->Cell(45, $one, $designWidth, 0, 1, 'L', 1, '', 0);
+
+        // 3. Thread List
+        $pdf->SetFont($selectedfont, 'B', 11);
+        $pdf->SetFillColor(180, 196, 209);
+        $rowY = $start + (6 * $one) + 5;
+        $pdf->SetXY($hstart1, $rowY);
+        $pdf->Cell(10, $one, '#', 0, 1, 'L', 1, '', 0);
+        $pdf->SetXY(20, $rowY);
+        $pdf->Cell(30, $one, 'Description', 0, 1, 'L', 1, '', 0);
+        $pdf->SetXY(50, $rowY);
+        $pdf->Cell(20, $one, 'Color', 0, 1, 'L', 1, '', 0);
+        $pdf->SetXY(70, $rowY);
+        $pdf->Cell(40, $one, 'Color Description', 0, 1, 'L', 1, '', 0);
+
+        $pdf->SetFont($selectedfont, '', 9);
+        $even = true;
+        $listStart = $rowY + $one + 3;
+        $itemHeight = 7;
+
+        for ($i = 1; $i <= ($logo['colourChanges'] ?? 0) + 1; $i++) {
+            $threadCode = $logo['thread_' . $i] ?? '';
+            $colorDetails = $threadCode ? $this->getcolorDetails($threadCode) : null;
+
+            $pdf->SetFillColor($even ? 245 : 232, $even ? 245 : 232, $even ? 245 : 232);
+            $rowY = $listStart + (($i - 1) * $itemHeight);
+
+            $pdf->SetXY($hstart1, $rowY);
+            $pdf->Cell(10, $itemHeight, str_pad($i, 2, "0", STR_PAD_LEFT), 0, 1, 'L', 1, '', 0);
+            $pdf->SetXY(20, $rowY);
+            $pdf->Cell(30, $itemHeight, $colorDetails['name'] ?? '', 0, 1, 'L', 1, '', 0);
+            $pdf->SetXY(50, $rowY);
+            $pdf->Cell(20, $itemHeight, $threadCode, 0, 1, 'L', 1, '', 0);
+            $pdf->SetXY(70, $rowY);
+            $pdf->Cell(40, $itemHeight, '', 0, 1, 'L', 1, '', 0);
+
+            $even = !$even;
+        }
+
+        // 4. Notes
+        $noteY = 169;
+        $noteHeight = 60;
+        $pdf->SetFillColor(245, 245, 245);
+
+        if (($logo['colourChanges'] ?? 0) + 1 > 10) {
+            $pdf->RoundedRect(115, $noteY - 5, 85, $noteHeight, 3.50, '1111', 'DF');
+            $pdf->SetFont($selectedfont, 'B', 11);
+            $pdf->SetXY(120, $noteY);
+            $pdf->Cell(60, $one, 'Notes :', 0, 1, 'L', 1, '', 0);
+            $pdf->SetXY(120, $noteY + 7);
+            $pdf->SetFont($selectedfont, '', 9);
+            $pdf->MultiCell(80, $one, $logo['description'] ?? '', 0, 'L', 1, 2, null, null, true);
+            $pdf->SetX(120);
+            $pdf->MultiCell(80, $one, $logo['special_instruction'] ?? '', 0, 'L', 1, 2, null, null, true);
+        } else {
+            $noteY = 69 + $boxheight + 6;
+            $pdf->RoundedRect(10, $noteY, $boxwidth, 50, 3.50, '1111', 'DF');
+            $pdf->SetFont($selectedfont, 'B', 11);
+            $pdf->SetXY(14, $noteY + 5);
+            $pdf->Cell(80, $one, 'Notes :', 0, 1, 'L', 1, '', 0);
+            $pdf->SetXY(14, $noteY + 12);
+            $pdf->SetFont($selectedfont, '', 9);
+            $pdf->MultiCell(80, $one, $logo['description'] ?? '', 0, 'L', 1, 2, null, null, true);
+            $pdf->SetX(14);
+            $pdf->MultiCell(80, $one, $logo['special_instruction'] ?? '', 0, 'L', 1, 2, null, null, true);
+        }
+
+        // 5. Logo Image
+        $scale = $this->calculateDimensions($logo['designWidth'] ?? 1, $logo['designHeight'] ?? 1, 70, 70);
+        $pdf->SetFillColor(255, 255, 255);
+        $pdf->RoundedRect(115, 69, 85, 90, 3.50, '1111', 'DF');
+
+        $logoImage = __DIR__ . '/../logo_uploads/' . $logoId . '.DST.PNG';
+        if (file_exists($logoImage)) {
+            $pdf->Image($logoImage, 118, 75, $scale['width'], $scale['height'], '', '', '', true, 150, '', false, false, 0, false, false, false);
+        }
+
+        // 6. Footer
+        $printedDateTime = date('d/m/Y H:i:s');
+        $footerY = $pdf->getPageHeight() - 15;
+        $pdf->SetFont($selectedfont, '', 8);
+        $pdf->SetXY(10, $footerY);
+        $pdf->Cell(100, 5, "Print DateTime: $printedDateTime", 0, 0);
+        $pdf->SetXY($pdf->getPageWidth() - 110, $footerY);
+        $pdf->Cell(100, 5, "", 0, 0, 'R');
+
+        return $pdf->Output($logoId . ".pdf", 'S');
+    }
+
+    /**
+     * Download Logo ZIP
+     * GET /customer/logo/download_zip?logo_id=xxx
+     */
+    public function download_logo_zip($args)
+    {
+        try {
+            $logoId = trim($_GET['logo_id'] ?? ($args['logo_id'] ?? ''));
+            if (empty($logoId)) {
+                return $this->out(['status' => false, 'message' => 'logo_id is required'], 422);
+            }
+
+            // Get logo info
+            $logo = $this->from('logos')->where('logo_id', $logoId)->fetch();
+
+            if (!$logo) {
+                return $this->out(['status' => false, 'message' => 'Logo not found'], 404);
+            }
+
+            $uploadDir = __DIR__ . '/../logo_uploads/';
+
+            // Create a temporary ZIP file
+            $tmpZipFile = tempnam(sys_get_temp_dir(), 'logo_zip_') . '.zip';
+            $zip = new \ZipArchive();
+
+            if ($zip->open($tmpZipFile, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) !== true) {
+                return $this->out(['status' => false, 'message' => 'Failed to create ZIP file'], 500);
+            }
+
+            // 1. Add Color Card PDF to ZIP
+            try {
+                $pdfData = $this->generateColorCardPdfContent($logoId);
+                $zip->addFromString($logoId . '_color_card.pdf', $pdfData);
+            } catch (\Exception $e) {
+                // Ignore PDF generation error but maybe log it. We still want to return other files if possible.
+                error_log("Failed to add PDF to logo zip for $logoId: " . $e->getMessage());
+            }
+
+            // 2. Add logo files
+            if (!empty($logo['availabe_extentions'])) {
+                $exts = explode(',', $logo['availabe_extentions']);
+                foreach ($exts as $ext) {
+                    $ext = trim($ext);
+                    if (empty($ext))
+                        continue;
+
+                    // Depending on how extensions are saved, it might have an underscore like `_DST.PNG` or just `DST`
+                    $fileName = $logoId . (strpos($ext, '_') === 0 ? '' : '.') . $ext;
+                    $filePath = $uploadDir . $fileName;
+
+                    if (file_exists($filePath)) {
+                        $zip->addFile($filePath, $fileName);
+                    }
+                }
+            }
+
+            $zip->close();
+
+            // 3. Check if file is valid
+            if (!file_exists($tmpZipFile) || filesize($tmpZipFile) === 0) {
+                return $this->out(['status' => false, 'message' => 'ZIP file is empty or missing'], 500);
+            }
+
+            // 4. Output the ZIP
+            ob_clean();
+            header('Content-Type: application/zip');
+            header('Content-Disposition: attachment; filename="' . $logoId . '_archive.zip"');
+            header('Content-Length: ' . filesize($tmpZipFile));
+            header('Pragma: no-cache');
+            header('Expires: 0');
+            readfile($tmpZipFile);
+
+            // Cleanup
+            unlink($tmpZipFile);
+            exit;
+
+        } catch (\Throwable $e) {
+            return $this->out(['status' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
 }

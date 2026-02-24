@@ -95,6 +95,8 @@ $post[] = ['customer/thread_grouping/update', 'logo/update_thread_grouping'];
 $post[] = ['customer/logo/trash', 'logo/trash_logo'];
 $get[] = ['customer/trash_logos', 'logo/get_trashed_logos'];
 $post[] = ['customer/logo/permanently_delete', 'logo/permanently_delete_logo'];
+$get[] = ['customer/logo/downloadcolorcard', 'logo/downloadcolorcard'];
+$get[] = ['customer/logo/download_zip', 'logo/download_logo_zip'];
 
 // Platform management
 $get[] = ['list_platforms', 'settings/list_platforms'];

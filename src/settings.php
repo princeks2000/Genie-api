@@ -502,6 +502,43 @@ class settings extends model
 		return $this->out(['status' => true, 'message' => 'Updated', 'item' => $updated], 200);
 	}
 
+	public function logo_conversion_methods_list($args)
+	{
+		try {
+			$items = $this->from('logo_conversion_methods')->orderBy('id ASC')->fetchAll();
+			return $this->out(['status' => true, 'items' => $items], 200);
+		} catch (\Throwable $e) {
+			return $this->out(['status' => false, 'message' => $e->getMessage()], 500);
+		}
+	}
+
+	public function logo_conversion_methods_toggle($args)
+	{
+		try {
+			$id = intval($this->req['id'] ?? ($args['id'] ?? 0));
+			if ($id <= 0) {
+				return $this->out(['status' => false, 'message' => 'id is required'], 422);
+			}
+
+			$existing = $this->from('logo_conversion_methods')->where('id', $id)->fetch();
+			if (!$existing) {
+				return $this->out(['status' => false, 'message' => 'Method not found'], 404);
+			}
+
+			if (isset($this->req['status'])) {
+				$newStatus = intval($this->req['status']) ? 1 : 0;
+			} else {
+				$newStatus = $existing['status'] ? 0 : 1;
+			}
+
+			$this->update('logo_conversion_methods')->set(['status' => $newStatus])->where('id', $id)->execute();
+			$updated = $this->from('logo_conversion_methods')->where('id', $id)->fetch();
+			return $this->out(['status' => true, 'message' => 'Updated', 'item' => $updated], 200);
+		} catch (\Throwable $e) {
+			return $this->out(['status' => false, 'message' => $e->getMessage()], 500);
+		}
+	}
+
 	public function update_platform($args)
 	{
 		try {
@@ -675,6 +712,64 @@ class settings extends model
 	public function color_list_save($args)
 	{
 		try {
+			$items = $this->req['items'] ?? null;
+
+			if (is_array($items)) {
+				$this->pdo->beginTransaction();
+				try {
+					$count = 0;
+					$resultItems = [];
+
+					foreach ($items as $it) {
+						$id = intval($it['id'] ?? 0);
+						$data = [
+							'name' => $it['name'] ?? '',
+							'manufacturer' => $it['manufacturer'] ?? '',
+							'code' => $it['code'] ?? '',
+							'm_code' => $it['m_code'] ?? '',
+							'red' => $it['red'] ?? null,
+							'green' => $it['green'] ?? null,
+							'blue' => $it['blue'] ?? null,
+							'wilcom_code' => $it['wilcom_code'] ?? '',
+							'status' => intval($it['status'] ?? 1)
+						];
+
+						if (empty($data['name']) || empty($data['manufacturer']) || empty($data['code'])) {
+							continue;
+						}
+
+						if ($id > 0) {
+							$this->update('color_list')->set($data)->where('id', $id)->execute();
+						} else {
+							$existing = $this->from('color_list')
+								->where('code', $data['code'])
+								->where('manufacturer', $data['manufacturer'])
+								->fetch();
+							if ($existing) {
+								$id = intval($existing['id']);
+								$this->update('color_list')->set($data)->where('id', $id)->execute();
+							} else {
+								$id = $this->insertInto('color_list')->values($data)->execute();
+							}
+						}
+
+						$count++;
+						$resultItems[] = $this->from('color_list')->where('id', $id)->fetch();
+					}
+
+					$this->pdo->commit();
+					return $this->out([
+						'status' => true,
+						'message' => 'Colors saved successfully',
+						'count' => $count,
+						'items' => $resultItems
+					], 200);
+				} catch (\Throwable $e) {
+					$this->pdo->rollBack();
+					throw $e;
+				}
+			}
+
 			$id = intval($this->req['id'] ?? 0);
 			$data = [
 				'name' => $this->req['name'] ?? '',
@@ -696,8 +791,18 @@ class settings extends model
 				$this->update('color_list')->set($data)->where('id', $id)->execute();
 				$message = 'Color updated successfully';
 			} else {
-				$id = $this->insertInto('color_list')->values($data)->execute();
-				$message = 'Color created successfully';
+				$existing = $this->from('color_list')
+					->where('code', $data['code'])
+					->where('manufacturer', $data['manufacturer'])
+					->fetch();
+				if ($existing) {
+					$id = intval($existing['id']);
+					$this->update('color_list')->set($data)->where('id', $id)->execute();
+					$message = 'Color updated successfully';
+				} else {
+					$id = $this->insertInto('color_list')->values($data)->execute();
+					$message = 'Color created successfully';
+				}
 			}
 
 			return $this->out(['status' => true, 'message' => $message, 'id' => $id], 200);
@@ -1213,4 +1318,3 @@ class settings extends model
 		], 200);
 	}
 }
-

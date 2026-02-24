@@ -48,6 +48,9 @@ $post[] = ['configurations/delete', 'settings/configurations_delete'];
 $get[] = ['logo_types/list', 'settings/logo_types_list'];
 $post[] = ['logo_types/toggle', 'settings/logo_types_toggle'];
 
+$get[] = ['logo_conversion_methods/list', 'settings/logo_conversion_methods_list'];
+$post[] = ['logo_conversion_methods/toggle', 'settings/logo_conversion_methods_toggle'];
+
 $post[] = ['explore_api_keys', 'settings/explore_api_keys'];
 $post[] = ['create_display_field', 'settings/save_display_fields'];
 $post[] = ['update_display_field', 'settings/save_display_fields'];
@@ -115,7 +118,6 @@ $post[] = ['settings/color_manufacturer/delete', 'settings/color_manufacturer_de
 $post[] = ['settings/color_list/retrieve', 'settings/color_list_retrieve'];
 $post[] = ['settings/color_list/save', 'settings/color_list_save'];
 $post[] = ['settings/color_list/delete', 'settings/color_list_delete'];
-
 // Dict Color CRUD endpoints
 $get[] = ['settings/dist_color', 'settings/dict_color_list'];
 $post[] = ['settings/dist_color/retrieve', 'settings/dict_color_retrieve'];
@@ -149,3 +151,8 @@ $post[] = ['general/feature_request/save', 'general/feature_request_save'];
 $get[] = ['general/feature_request/list', 'general/feature_request_list'];
 $post[] = ['general/feature_request/retrieve', 'general/feature_request_retrieve'];
 $post[] = ['general/feature_request/delete', 'general/feature_request_delete'];
+
+// General file utilities
+$get[] = ['general/files/list', 'general/list_files'];
+$post[] = ['general/fileupload', 'general/fileupload'];
+$post[] = ['general/file/delete', 'general/delete_file'];
